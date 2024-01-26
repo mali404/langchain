@@ -6,6 +6,7 @@ from langchain_core.agents import AgentAction, AgentFinish
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.outputs import LLMResult
 from packaging.version import parse
+import argilla as rg
 
 
 class ArgillaCallbackHandler(BaseCallbackHandler):
@@ -64,6 +65,7 @@ class ArgillaCallbackHandler(BaseCallbackHandler):
         workspace_name: Optional[str] = None,
         api_url: Optional[str] = None,
         api_key: Optional[str] = None,
+        #is_rag: bool = False, #added new parameter but coudn;t succeed because the server didn't have that
     ) -> None:
         """Initializes the `ArgillaCallbackHandler`.
 
@@ -122,7 +124,7 @@ class ArgillaCallbackHandler(BaseCallbackHandler):
 
         if api_key is None and os.getenv("ARGILLA_API_KEY") is None:
             self.DEFAULT_API_KEY = (
-                "admin.apikey"
+                "argilla.apikey"
                 if parse(self.ARGILLA_VERSION) < parse("1.11.0")
                 else "owner.apikey"
             )
@@ -135,6 +137,7 @@ class ArgillaCallbackHandler(BaseCallbackHandler):
                 ),
             )
             api_key = self.DEFAULT_API_KEY
+
 
         # Connect to Argilla with the provided credentials, if applicable
         try:
@@ -176,7 +179,7 @@ class ArgillaCallbackHandler(BaseCallbackHandler):
                 f" please report it to {self.ISSUES_URL} as an `integration` issue."
             ) from e
 
-        supported_fields = ["prompt", "response"]
+        """supported_fields = ["prompt", "response"]
         if supported_fields != [field.name for field in self.dataset.fields]:
             raise ValueError(
                 f"`FeedbackDataset` with name={self.dataset_name} in the workspace="
@@ -185,7 +188,7 @@ class ArgillaCallbackHandler(BaseCallbackHandler):
                 f" and the current `FeedbackDataset` fields are {[field.name for field in self.dataset.fields]}."  # noqa: E501
                 " For more information on how to create a `langchain`-compatible"
                 f" `FeedbackDataset` in Argilla, please visit {self.BLOG_URL}."
-            )
+            )"""
 
         self.prompts: Dict[str, List[str]] = {}
 
@@ -264,6 +267,7 @@ class ArgillaCallbackHandler(BaseCallbackHandler):
         log the outputs to Argilla, and pop the run from `self.prompts`. The behavior
         differs if the output is a list or not.
         """
+        #if kwargs["is_rag"]==True:    
         if not any(
             key in self.prompts
             for key in [str(kwargs["parent_run_id"]), str(kwargs["run_id"])]
@@ -273,35 +277,90 @@ class ArgillaCallbackHandler(BaseCallbackHandler):
             str(kwargs["run_id"])
         )
         for chain_output_key, chain_output_val in outputs.items():
-            if isinstance(chain_output_val, list):
-                # Creates the records and adds them to the `FeedbackDataset`
-                self.dataset.add_records(
-                    records=[
-                        {
-                            "fields": {
-                                "prompt": prompt,
-                                "response": output["text"].strip(),
-                            },
-                        }
-                        for prompt, output in zip(
-                            prompts,  # type: ignore
-                            chain_output_val,
-                        )
-                    ]
-                )
-            else:
-                # Creates the records and adds them to the `FeedbackDataset`
-                self.dataset.add_records(
-                    records=[
-                        {
-                            "fields": {
-                                "prompt": " ".join(prompts),  # type: ignore
-                                "response": chain_output_val.strip(),
-                            },
-                        }
-                    ]
-                )
-
+            try:
+                if isinstance(chain_output_val, list):
+                    # Creates the records and adds them to the `FeedbackDataset`
+                    print("if - is a list")
+                    self.dataset.add_records( 
+                                                records = [
+                                                    {
+                                                        rg.FeedbackRecord(  #this is the new way to create records, doesn't require push_to_argilla()
+                                                            fields = {
+                                                                    "answer":output["text"].strip(),
+                                                                    "retrieved_chunk_1": prompt.split("\n\n\n")[1].split("\nCoC: ")[0].split(":\n")[1].strip(),
+                                                                    "retrieved_chunk_2": prompt.split("\n\n\n")[1].split("\nCoC: ")[1].strip(),
+                                                                    "retrieved_chunk_3": prompt.split("\n\n\n")[1].split("\nCoC: ")[2].strip(),
+                                                                    "question": prompt.split("\n\n\n")[2].split(":\n")[1]
+                                                                },
+                                                        )
+                                                    }
+                                                    for prompt, output in zip(
+                                                        prompts,  # type: ignore
+                                                        chain_output_val,
+                                                        )
+                                                ]
+                                            )
+                else:
+                    # Creates the records and adds them to the `FeedbackDataset`
+                    print("else - not a list")
+                    print(prompts[0])
+                    self.dataset.add_records(
+                        records = [                            
+                            rg.FeedbackRecord(
+                                fields = {
+                                    "answer":chain_output_val.strip(),
+                                    "retrieved_chunk_1": prompts[0].split("\n\n||")[1].split("\nCoC: ")[0].split(":\n")[1].strip(),
+                                    "retrieved_chunk_2": prompts[0].split("\n\n||")[1].split("\nCoC: ")[1].strip(),
+                                    "retrieved_chunk_3": prompts[0].split("\n\n||")[1].split("\nCoC: ")[2].strip(),
+                                    "question": prompts[0].split("\n\n||")[2].split(":\n")[1]
+                                },
+                            )                            
+                        ]
+                    )
+            except Exception as e:
+                print(e)
+                print("Error in creating records")
+                pass
+        """ else:    
+            if not any(
+                key in self.prompts
+                for key in [str(kwargs["parent_run_id"]), str(kwargs["run_id"])]
+            ):
+                return
+            prompts = self.prompts.get(str(kwargs["parent_run_id"])) or self.prompts.get(
+                str(kwargs["run_id"])
+            )
+            for chain_output_key, chain_output_val in outputs.items():
+                if isinstance(chain_output_val, list):
+                    # Creates the records and adds them to the `FeedbackDataset`               
+                    self.dataset.add_records(
+                        records=[
+                            {
+                                "fields": {
+                                    "prompt": prompt,
+                                    "response": output["text"].strip(),
+                                },
+                            }
+                            for prompt, output in zip(
+                                prompts,  # type: ignore
+                                chain_output_val,
+                            )
+                        ]
+                    )
+                else:
+                    # Creates the records and adds them to the `FeedbackDataset`
+                    self.dataset.add_records(
+                        records=[
+                            {
+                                "fields": {
+                                    "prompt": " ".join(prompts),  # type: ignore
+                                    "response": chain_output_val.strip(),
+                                },
+                            }
+                        ]
+                    ) """
+                    
+        
         # Pop current run from `self.runs`
         if str(kwargs["parent_run_id"]) in self.prompts:
             self.prompts.pop(str(kwargs["parent_run_id"]))
